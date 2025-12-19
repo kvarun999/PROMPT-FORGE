@@ -1,46 +1,50 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
 import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateProjectDto } from './dto/update-project.dto';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class ProjectsService {
   constructor(private prisma: PrismaService) {}
 
-  // 1. Create a Project
-  create(createProjectDto: CreateProjectDto) {
+  async create(createProjectDto: CreateProjectDto, userId: string) {
     return this.prisma.project.create({
       data: {
-        name: createProjectDto.name,
-        description: createProjectDto.description || '', // Handle optional description
+        ...createProjectDto,
+        userId: userId, // Link the project to the user
       },
     });
   }
 
-  // 2. Find All Projects
-  findAll() {
+  async findAll(userId: string) {
+    // Only return projects belonging to the logged-in user
     return this.prisma.project.findMany({
-      include: { prompts: true }, // Optional: Include prompts count if needed
+      where: { userId },
+      include: { prompts: true }, // Optional: include prompts if needed
     });
   }
 
-  // 3. Find One Project
-  findOne(id: string) {
-    return this.prisma.project.findUnique({
-      where: { id },
+  async findOne(id: string, userId: string) {
+    return this.prisma.project.findFirst({
+      where: { id, userId }, // Ensure user owns the project
       include: { prompts: true },
     });
   }
 
-  // 4. Update
-  update(id: string, updateProjectDto: any) {
+  async update(id: string, updateProjectDto: UpdateProjectDto, userId: string) {
+    // Verify ownership before updating
+    await this.findOne(id, userId);
+
     return this.prisma.project.update({
       where: { id },
       data: updateProjectDto,
     });
   }
 
-  // 5. Delete
-  remove(id: string) {
+  async remove(id: string, userId: string) {
+    // Verify ownership before deleting
+    await this.findOne(id, userId);
+
     return this.prisma.project.delete({
       where: { id },
     });

@@ -1,17 +1,21 @@
 import { createApp } from "vue";
-import { install as VueMonacoEditorPlugin } from "@guolao/vue-monaco-editor";
 import "./style.css";
 import App from "./App.vue";
 import router from "./router";
+import { createPinia } from "pinia";
+import { install as VueMonacoEditorPlugin } from "@guolao/vue-monaco-editor";
 
+const pinia = createPinia();
 const app = createApp(App);
 
-// Re-enable Monaco, but use 'unpkg' instead of the default
+app.use(pinia);
+app.use(router);
+
+// Configure Monaco Editor to load from CDN (Faster/Easier setup)
 app.use(VueMonacoEditorPlugin, {
   paths: {
-    vs: "https://unpkg.com/monaco-editor@0.44.0/min/vs",
+    vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.43.0/min/vs",
   },
 });
 
-app.use(router);
 app.mount("#app");

@@ -1,11 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePromptDto } from './dto/create-prompt.dto';
 import { AiService } from '../ai/ai.service';
 import { Readable } from 'stream';
-import { BadRequestException } from '@nestjs/common';
-
-// FIX 1: Correct import syntax for csv-parser
 import csv from 'csv-parser';
 
 @Injectable()
@@ -15,8 +16,16 @@ export class PromptsService {
     private aiService: AiService,
   ) {}
 
-  create(createPromptDto: CreatePromptDto) {
+  async create(createPromptDto: CreatePromptDto, userId: string) {
     const { name, projectId, template } = createPromptDto;
+
+    // Validate project belongs to user
+    const project = await this.prisma.project.findFirst({
+      where: { id: projectId, userId },
+    });
+    if (!project)
+      throw new BadRequestException('Project not found or access denied');
+
     return this.prisma.prompt.create({
       data: {
         name,
@@ -33,17 +42,14 @@ export class PromptsService {
     });
   }
 
-  // Update a prompt's name or metadata
-  update(id: string, updatePromptDto: any) {
-    // You can replace 'any' with UpdatePromptDto if you have it
+  async update(id: string, updatePromptDto: any, userId: string) {
     return this.prisma.prompt.update({
       where: { id },
       data: updatePromptDto,
     });
   }
 
-  // Delete a prompt and all its versions
-  remove(id: string) {
+  async remove(id: string, userId: string) {
     return this.prisma.prompt.delete({
       where: { id },
     });
@@ -92,7 +98,14 @@ export class PromptsService {
     });
   }
 
-  // Inside PromptsService class...
+  // --- BATCH TESTING LOGIC ---
+
+  private getProviderFromModel(model: string): string {
+    if (model.toLowerCase().includes('gemini')) return 'gemini';
+    return 'groq'; // Default fallback
+  }
+
+  // ... inside PromptsService class ...
 
   async runBatch(promptId: string, fileBuffer: Buffer) {
     const promptVersion = await this.prisma.promptVersion.findFirst({
@@ -106,6 +119,7 @@ export class PromptsService {
       );
     }
 
+    // Parse CSV
     const stream = Readable.from(fileBuffer.toString());
     const rows: any[] = await new Promise((resolve, reject) => {
       const items: any[] = [];
@@ -116,13 +130,15 @@ export class PromptsService {
         .on('error', (err) => reject(err));
     });
 
-    // 1. Create a new Batch Run record
+    // 1. Create Batch Run Record
     const batchRun = await this.prisma.batchRun.create({
       data: { promptId },
     });
 
     const results: any[] = [];
+    const provider = this.getProviderFromModel(promptVersion.model);
 
+    // 2. Process each row
     for (const row of rows) {
       let populatedTemplate = promptVersion.template;
       for (const [key, value] of Object.entries(row)) {
@@ -134,30 +150,60 @@ export class PromptsService {
 
       let output = '';
       let status = 'success';
+      let latencyMs = 0;
+      let tokenCount = 0;
+      let cost = 0;
 
       try {
-        const response = await this.aiService.generateText(
+        const response = await this.aiService.generate(
           populatedTemplate,
           promptVersion.model,
+          provider,
         );
-        output = response.content;
+        output = response.output;
+        latencyMs = response.latencyMs;
+        tokenCount = response.tokenUsage;
+        cost = response.cost;
       } catch (error) {
-        output = 'Failed to generate';
+        console.error('Batch generation error:', error);
+        output = `Error: ${error.message}`;
         status = 'error';
       }
 
-      // 2. Save each result to the Database
+      // --- 🤖 AUTOMATED METRIC: JSON Validity Check ---
+      // Requirement: "Implement at least one automated quality metric"
+      let qualityScore = 0; // 0 = Fail, 1 = Pass
+      try {
+        // Try to parse the output. If it works, it's valid JSON.
+        JSON.parse(output);
+        qualityScore = 1;
+      } catch (e) {
+        // If it fails (e.g. normal text), score is 0
+        qualityScore = 0;
+      }
+
+      // 3. Save detailed metrics to DB
       await this.prisma.batchResult.create({
         data: {
           batchRunId: batchRun.id,
-          inputs: row, // Prisma handles JSON automatically
+          inputs: row,
           output: output,
           status: status,
+          latencyMs: Math.round(latencyMs),
+          tokenCount: tokenCount,
+          cost: cost,
+          qualityScore: qualityScore, // ✅ Saving the real score now
         },
       });
 
-      // Add to array to return to UI immediately
-      results.push({ inputs: row, output, status });
+      results.push({
+        inputs: row,
+        output,
+        status,
+        latencyMs,
+        cost,
+        qualityScore, // ✅ Returning it to frontend
+      });
     }
 
     return results;
